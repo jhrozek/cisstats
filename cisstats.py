@@ -10,21 +10,54 @@ XCCDF12_NS = "http://checklists.nist.gov/xccdf/1.2"
 OVAL_NS = "http://oval.mitre.org/XMLSchema/oval-definitions-5"
 IGNITION_SYSTEM = "urn:xccdf:fix:script:ignition"
 KUBERNETES_SYSTEM = "urn:xccdf:fix:script:kubernetes"
+OCIL_SYSTEM = "http://scap.nist.gov/schema/ocil/2"
 
 SECTION_RE = '[0-9]+\.[0-9]+(\.[0-9]+)?'
 section_re = re.compile(SECTION_RE)
 
 
-class RuleStats:
+class RuleProperties:
     def __init__(self, rule_id):
         self.rule_id = rule_id
 
         self.ignition_fix = False
         self.kubernetes_fix = False
+        self.ocil_check = False
         self.cis_id = ""
 
     def __str__(self):
-        return "%s: %s" % (self.rule_id, self.cis_id)
+        return "%s: %s" % (self.cis_id, self.rule_id)
+
+
+class BenchmarkStats:
+    def __init__(self, cis_bench_stats):
+        self.missing_ocil = list()
+        self.rules = list()
+
+        self.by_id = dict()
+        for s in cis_bench_stats:
+            self.by_id[s.section] = list()
+
+        self.n_rule_not_implemented = 0
+        self.n_rule_implemented = 0
+
+    def add(self, rule):
+        if rule.cis_id not in self.by_id.keys():
+            raise ValueError("Rule %s does not belong to the CIS profile" % rule.cis_id)
+
+        self.rules.append(rule)
+        self.by_id[rule.cis_id].append(rule)
+        if rule.ocil_check == False:
+            self.missing_ocil.append(rule)
+
+    def compute_stats(self):
+        self.n_rule_not_implemented = 0
+        self.n_rule_implemented = 0
+        for k, v in self.by_id.items():
+            if len(v) == 0:
+                self.n_rule_not_implemented += 1
+            else:
+                self.n_rule_implemented += 1
 
 
 class XCCDFBenchmark:
@@ -108,14 +141,20 @@ def process_rules(rule_stats, rules):
                                     (XCCDF12_NS, IGNITION_SYSTEM))
             kubernetes_fix = rule.find("./{%s}fix[@system=\"%s\"]" %
                                         (XCCDF12_NS, KUBERNETES_SYSTEM))
+            ocil_check = rule.find("./{%s}check[@system=\"%s\"]" %
+                                   (XCCDF12_NS, OCIL_SYSTEM))
             cis_id = rule.find("./{%s}reference" %
                                (XCCDF12_NS))
 
-            rstat = RuleStats(rule_id)
-            rstat.cis_id = cis_id.text
-            rstat.ignition_fix = False if ignition_fix is None else True
-            rstat.kubernetes_fix = False if kubernetes_fix is None else True
-            rule_stats[rstat.cis_id] = rstat
+            rprop = RuleProperties(rule_id)
+            rprop.cis_id = cis_id.text
+            rprop.ignition_fix = False if ignition_fix is None else True
+            rprop.kubernetes_fix = False if kubernetes_fix is None else True
+            rprop.ocil_check = False if ocil_check is None else True
+            try:
+                rule_stats.add(rprop)
+            except ValueError as e:
+                print(e)
         return rule_stats
 
 
@@ -135,28 +174,31 @@ def main():
         doc = CisDoc(args.cis_path)
         cis_control_sections = doc.read_sections()
 
-    stats = {}
+    stats = BenchmarkStats(cis_control_sections)
     if args.ds_path:
         bench = XCCDFBenchmark(args.ds_path)
         for profile in [p for p in args.profiles.split(',')]:
             rules = bench.get_rules(profile)
             stats = process_rules(stats, rules)
 
-    # make sure the profiles don't implement some extra/errorneous controls
-    seclist = [s.section for s in cis_control_sections]
-    for ctrl in stats.keys():
-        if ctrl not in seclist:
-            print("Rule %s does not exist in the CIS benchmark" % ctrl)
-
     print("* Rules not covered by neither cis.profile nor cis-node.profile")
     for s in cis_control_sections:
-        if s.section not in stats.keys():
+        if len(stats.by_id[s.section]) == 0:
             print("\t%s: %s" % (s.section, s.title))
+    print()
 
-    print("\n")
+    print("* Rules with missing OCIL")
+    for no_ocil in stats.missing_ocil:
+        print("\t" + str(no_ocil))
+    print()
+
+    stats.compute_stats()
     print("* Statistics")
-    percent = 100.0 * (len(stats.keys())/len(cis_control_sections))
-    print("\t%d/%d (%.2f%%) of controls present in either by cis.profile or cis-node.profile" % (len(stats.keys()), len(cis_control_sections), percent))
+    included_percent = 100.0 * (stats.n_rule_implemented/len(stats.by_id))
+    no_ocil_percent = 100.0 * (len(stats.missing_ocil)/len(stats.by_id))
+    print("\t%d/%d (%.2f%%) of controls present in either by cis.profile or cis-node.profile" % (stats.n_rule_implemented, len(stats.by_id), included_percent))
+    print("\t%d/%d (%.2f%%) of controls missing in both cis.profile or cis-node.profile" % (stats.n_rule_not_implemented, len(stats.by_id), 100.0-included_percent))
+    print("\t%d/%d (%.2f%%) of controls missing OCIL" % (len(stats.missing_ocil), len(stats.by_id), no_ocil_percent))
 
 if __name__ == "__main__":
     main()
