@@ -142,10 +142,21 @@ def main():
             rules = bench.get_rules(profile)
             stats = process_rules(stats, rules)
 
+    # make sure the profiles don't implement some extra/errorneous controls
+    seclist = [s.section for s in cis_control_sections]
+    for ctrl in stats.keys():
+        if ctrl not in seclist:
+            print("Rule %s does not exist in the CIS benchmark" % ctrl)
+
+    print("* Rules not covered by neither cis.profile nor cis-node.profile")
     for s in cis_control_sections:
         if s.section not in stats.keys():
-            print("Rule %s not covered by cis content" % s.section)
-    print("%d/%d covered by CIS profile" % (len(stats.keys()), len(cis_control_sections)))
+            print("\t%s: %s" % (s.section, s.title))
+
+    print("\n")
+    print("* Statistics")
+    percent = 100.0 * (len(stats.keys())/len(cis_control_sections))
+    print("\t%d/%d (%.2f%%) of controls present in either by cis.profile or cis-node.profile" % (len(stats.keys()), len(cis_control_sections), percent))
 
 if __name__ == "__main__":
     main()
