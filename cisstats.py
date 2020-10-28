@@ -90,14 +90,11 @@ class BenchmarkStats:
         if rule.oval == False:
             self.missing_oval.append(rule)
 
-    def compute_stats(self):
-        self.n_rule_not_implemented = 0
-        self.n_rule_implemented = 0
-        for v in self.by_id.values():
-            if len(v) == 0:
-                self.n_rule_not_implemented += 1
-            else:
-                self.n_rule_implemented += 1
+    def not_implemented_rules(self):
+        return [ r for r in self.by_id.values() if len(r) == 0 ]
+
+    def implemented_rules(self):
+        return [ r for r in self.by_id.values() if len(r) > 0 ]
 
 
 class XCCDFBenchmark:
@@ -218,6 +215,12 @@ def process_rules(rule_stats, rules,  profile):
     return rule_stats
 
 
+def print_statline(title, sub_i, total_i):
+    sub = len(sub_i)
+    total = len(total_i)
+    percent = 100.0 * (sub/total)
+    print("\t%d/%d (%.2f%%) of %s" % (sub, total, percent, title))
+
 def main():
     parser = argparse.ArgumentParser(prog="cisstats.py")
 
@@ -271,15 +274,11 @@ def main():
         print("\t" + str(no_oval))
     print()
 
-    stats.compute_stats()
     print("* Statistics")
-    included_percent = 100.0 * (stats.n_rule_implemented/len(stats.by_id))
-    no_ocil_percent = 100.0 * (len(stats.missing_ocil)/len(stats.by_id))
-    no_oval_percent = 100.0 * (len(stats.missing_oval)/len(stats.by_id))
-    print("\t%d/%d (%.2f%%) of controls present in either by cis.profile or cis-node.profile" % (stats.n_rule_implemented, len(stats.by_id), included_percent))
-    print("\t%d/%d (%.2f%%) of controls missing in both cis.profile or cis-node.profile" % (stats.n_rule_not_implemented, len(stats.by_id), 100.0-included_percent))
-    print("\t%d/%d (%.2f%%) of controls missing OCIL" % (len(stats.missing_ocil), len(stats.by_id), no_ocil_percent))
-    print("\t%d/%d (%.2f%%) of controls missing OVAL" % (len(stats.missing_oval), len(stats.by_id), no_oval_percent))
+    print_statline("controls implemented in either profile", stats.implemented_rules(), stats.by_id)
+    print_statline("controls missing in both profiles", stats.not_implemented_rules(), stats.by_id)
+    print_statline("controls missing OCIL", stats.missing_ocil, stats.by_id)
+    print_statline("controls missing OVAL", stats.missing_oval, stats.by_id)
 
 if __name__ == "__main__":
     main()
