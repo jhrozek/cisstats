@@ -2,7 +2,10 @@
 
 import docx
 import re
+import os.path
+import sys
 import argparse
+import subprocess
 
 from xml.etree import ElementTree
 
@@ -224,8 +227,11 @@ def print_statline(title, sub_i, total_i):
 def main():
     parser = argparse.ArgumentParser(prog="cisstats.py")
 
-    parser.add_argument("--ds-path", help="The path to the dataStream")
+    parser.add_argument("--ds-path", help="The path to the DataStream")
+    parser.add_argument("--repo-path", help="The path to the CaC repo")
     parser.add_argument("--cis-path", help="The path to the CIS benchmark")
+    parser.add_argument('--no-rebuild', dest='rebuild', action='store_false', help='Do not rebuild the content in --repo-path (default: rebuild)')
+    parser.set_defaults(rebuild=True)
     # TODO: profile list
     parser.add_argument("--profiles",
                         default="xccdf_org.ssgproject.content_profile_cis,xccdf_org.ssgproject.content_profile_cis-node",
@@ -239,10 +245,24 @@ def main():
 
     stats = BenchmarkStats(cis_control_sections)
     if args.ds_path:
-        bench = XCCDFBenchmark(args.ds_path)
-        for profile in [p for p in args.profiles.split(',')]:
-            rules = bench.get_rules(profile)
-            stats = process_rules(stats, rules, profile)
+        ds_path = args.ds_path
+    elif args.repo_path:
+        ds_path = os.path.join(args.repo_path, "build/ssg-ocp4-ds.xml")
+
+        if args.rebuild == True:
+            buildscript_path = os.path.join(args.repo_path, "build_product")
+            buildp = subprocess.run([buildscript_path, "--datastream-only", "ocp4"], cwd=args.repo_path)
+            if buildp.returncode != 0:
+                print("Could not rebuild the content")
+                sys.exit(1)
+    else:
+        print("Please specify either --repo-path or --ds-path")
+        sys.exit(1)
+
+    bench = XCCDFBenchmark(ds_path)
+    for profile in [p for p in args.profiles.split(',')]:
+        rules = bench.get_rules(profile)
+        stats = process_rules(stats, rules, profile)
 
     print("* Rules not covered by neither cis.profile nor cis-node.profile")
     for s in cis_control_sections:
