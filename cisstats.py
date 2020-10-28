@@ -93,9 +93,11 @@ class BenchmarkStats:
         if rule.oval == False:
             self.missing_oval.append(rule)
 
+    @property
     def not_implemented_rules(self):
         return [ r for r in self.by_id.values() if len(r) == 0 ]
 
+    @property
     def implemented_rules(self):
         return [ r for r in self.by_id.values() if len(r) > 0 ]
 
@@ -261,6 +263,9 @@ def main():
 
     bench = XCCDFBenchmark(ds_path)
     for profile in [p for p in args.profiles.split(',')]:
+        if not profile.startswith(XCCDF_PROFILE_PREFIX):
+            profile = XCCDF_PROFILE_PREFIX + profile
+
         rules = bench.get_rules(profile)
         stats = process_rules(stats, rules, profile)
 
@@ -295,10 +300,10 @@ def main():
     print()
 
     print("* Statistics")
-    print_statline("controls implemented in either profile", stats.implemented_rules(), stats.by_id)
-    print_statline("controls missing in both profiles", stats.not_implemented_rules(), stats.by_id)
-    print_statline("controls missing OCIL", stats.missing_ocil, stats.by_id)
-    print_statline("controls missing OVAL", stats.missing_oval, stats.by_id)
+    print_statline("controls implemented in either profile", stats.implemented_rules, stats.by_id)
+    print_statline("controls missing in both profiles", stats.not_implemented_rules, stats.by_id)
+    print_statline("controls missing OCIL", stats.missing_ocil, stats.implemented_rules)
+    print_statline("controls missing OVAL", stats.missing_oval, stats.implemented_rules)
 
 if __name__ == "__main__":
     main()
