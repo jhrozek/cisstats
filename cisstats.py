@@ -18,6 +18,11 @@ XCCDF_PROFILE_PREFIX = "xccdf_org.ssgproject.content_profile_"
 SECTION_RE = r'[0-9]+\.[0-9]+(\.[0-9]+)?'
 section_re = re.compile(SECTION_RE)
 
+OPENXML_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+AUDIT_BG_COLOR = "ddd9c4"
+
+AUDIT_NEEDS_VERIFICATION_BLOB = "# needs verification"
+
 def removeprefix(fullstr, prefix):
     if fullstr.startswith(prefix):
         return fullstr[len(prefix):]
@@ -141,20 +146,51 @@ class CisCtrl:
 
         self.section = rmatch.group()
         self.title = full_title.lstrip(self.section).strip()
+        self.has_audit = False
+        self.audit_verified = True
+
+    def __repr__(self):
+        return "%s: %s" % (self.section, self.title)
 
 
 class CisDoc:
     def __init__(self, filename):
         self._doc = docx.Document(filename)
 
-    def read_sections(self):
-        section_iter = filter(self._section_filter, self._doc.paragraphs)
+    def read_controls(self):
+        ctrl = None
         sections = []
-        for s in section_iter:
-            sections.append(CisCtrl(s.text))
+        for p in self._doc.paragraphs:
+            if self._is_ctrl_header(p):
+                ctrl = CisCtrl(p.text)
+                sections.append(ctrl)
+
+            if self._is_audit(p):
+                if ctrl == None:
+                    raise ValueError("Audit outside section?")
+                ctrl.has_audit = True
+
+                if AUDIT_NEEDS_VERIFICATION_BLOB in p.text:
+                    ctrl.audit_verified = False
         return sections
 
-    def _section_filter(self, paragraph):
+    def _is_audit(self, paragraph):
+        if paragraph.style.name != "normal":
+            return False
+
+        tree = ElementTree.fromstring(paragraph.paragraph_format.element.xml)
+        if tree == None:
+            return False
+
+        # This is hacky, but python-docx does not seem to provide the background
+        # color as an attribute, so let's read it from the XML directly
+        has_audit_bg = tree.find(".//{%s}shd[@{%s}fill=\"%s\"]" % (OPENXML_NS, OPENXML_NS, AUDIT_BG_COLOR))
+        if has_audit_bg == None:
+            return False
+
+        return True
+
+    def _is_ctrl_header(self, paragraph):
         if paragraph.style.name != "Heading 3":
             return False
 
@@ -196,7 +232,7 @@ def main():
 
     if args.cis_path:
         doc = CisDoc(args.cis_path)
-        cis_control_sections = doc.read_sections()
+        cis_control_sections = doc.read_controls()
 
     stats = BenchmarkStats(cis_control_sections)
     if args.ds_path:
@@ -209,6 +245,20 @@ def main():
     for s in cis_control_sections:
         if len(stats.by_id[s.section]) == 0:
             print("\t%s: %s" % (s.section, s.title))
+    print()
+
+    print("* Rules missing an audit blob")
+    for s in cis_control_sections:
+        if s.has_audit == True:
+            continue
+        print("\t%s: %s" % (s.section, s.title))
+    print()
+
+    print("* Rules whose audit blob is not verified")
+    for s in cis_control_sections:
+        if s.has_audit == False or s.audit_verified == True:
+            continue
+        print("\t%s: %s" % (s.section, s.title))
     print()
 
     print("* Rules with missing OCIL")
