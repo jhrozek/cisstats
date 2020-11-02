@@ -43,23 +43,27 @@ def removeprefix(fullstr, prefix):
         return fullstr
 
 class RuleProperties:
-    def __init__(self, profile_id):
+    def __init__(self, profile_id, repo_path):
         self.profile_id = profile_id
+        self.repo_path = repo_path
         self.rule_id = None
+        self.name = None
         self.ignition_fix = False
         self.kubernetes_fix = False
         self.ocil_check = False
         self.oval = False
+        self.e2etest = False
         self.cis_id = ""
 
     def __repr__(self):
         return "%s: %s: %s" % (self.profile_id, self.cis_id, self.rule_id)
 
     def __str__(self):
-        return "%s: %s: %s" % (removeprefix(self.profile_id, XCCDF_PROFILE_PREFIX), self.cis_id, removeprefix(self.rule_id, XCCDF_RULE_PREFIX))
+        return "%s: %s: %s" % (removeprefix(self.profile_id, XCCDF_PROFILE_PREFIX), self.cis_id, self.name)
 
     def from_element(self, el):
         self.rule_id = el.get("id")
+        self.name = removeprefix(self.rule_id, XCCDF_RULE_PREFIX)
         oval = el.find("./{%s}check[@system=\"%s\"]" %
                          (XCCDF12_NS, OVAL_NS))
         ignition_fix = el.find("./{%s}fix[@system=\"%s\"]" %
@@ -78,12 +82,32 @@ class RuleProperties:
         self.oval = False if oval is None else True
         return self
 
+    def _get_rule_path(self):
+        cmd = ["find", self.repo_path, "-name", self.name, "-type", "d"]
+        process = subprocess.run(cmd, stdout=subprocess.PIPE, universal_newlines=True)
+        if process.returncode != 0:
+            print("WARNING: Rule path not found for rule: %s" % self.name)
+            return None
+        return process.stdout.strip("\n")
+
+    def verify_tests(self):
+        if self.repo_path is None:
+            return
+        path = self._get_rule_path()
+        if path is None:
+            return
+        e2etestpath = os.path.join(path, "tests", "ocp4", "e2e.yml")
+        if os.path.isfile(e2etestpath):
+            self.e2etest = True
+
 
 class BenchmarkStats:
-    def __init__(self, cis_bench_stats):
+    def __init__(self, cis_bench_stats, check_tests):
         self.missing_ocil = list()
         self.missing_oval = list()
+        self.missing_e2e_test = list()
         self.rules = list()
+        self.rules_with_oval = list()
 
         self.by_id = dict()
         for s in cis_bench_stats:
@@ -91,6 +115,8 @@ class BenchmarkStats:
 
         self.n_rule_not_implemented = 0
         self.n_rule_implemented = 0
+
+        self.check_tests = check_tests
 
     def add(self, rule):
         if rule.cis_id not in self.by_id.keys():
@@ -102,6 +128,10 @@ class BenchmarkStats:
             self.missing_ocil.append(rule)
         if rule.oval == False:
             self.missing_oval.append(rule)
+        else:
+            self.rules_with_oval.append(rule)
+        if self.check_tests and rule.oval and not rule.e2etest:
+            self.missing_e2e_test.append(rule)
 
     @property
     def not_implemented_rules(self):
@@ -339,14 +369,16 @@ class CisDoc:
         return self._doc.read_controls()
 
 
-def process_rules(rule_stats, rules,  profile):
+def process_rules(rule_stats, rules,  profile, repo_path):
     for rule in rules:
         if rule is None:
             continue
 
-        rprop = RuleProperties(profile).from_element(rule)
+        rprop = RuleProperties(profile, repo_path).from_element(rule)
         if rprop is None:
             continue
+
+        rprop.verify_tests()
 
         try:
             rule_stats.add(rprop)
@@ -379,7 +411,7 @@ def main():
                         help="Use a cached version of the gdoc if available")
 
     parser.add_argument("--ds-path", help="The path to the DataStream file")
-    parser.add_argument("--repo-path", help="The path to the CaC repo to read DS from")
+    parser.add_argument("--repo-path", default=None, help="The path to the CaC repo to read DS from")
     parser.add_argument("--ds-upstream",
                         action='store_true',
                         help="Fetch the latest built upstream DS")
@@ -404,12 +436,12 @@ def main():
         sys.exit(1)
 
     cis_control_sections = doc.read_controls()
-    stats = BenchmarkStats(cis_control_sections)
+    check_tests = args.repo_path is not None
+    stats = BenchmarkStats(cis_control_sections, check_tests)
     if args.ds_path:
         ds_path = args.ds_path
     elif args.repo_path:
         ds_path = os.path.join(args.repo_path, "build/ssg-ocp4-ds.xml")
-
         if args.rebuild == True:
             buildscript_path = os.path.join(args.repo_path, "build_product")
             buildp = subprocess.run(capture_output=True, args=[buildscript_path, "--datastream-only", "ocp4"], cwd=args.repo_path)
@@ -428,7 +460,7 @@ def main():
             profile = XCCDF_PROFILE_PREFIX + profile
 
         rules = bench.get_rules(profile)
-        stats = process_rules(stats, rules, profile)
+        stats = process_rules(stats, rules, profile, args.repo_path)
 
     print("* Rules not covered by neither cis.profile nor cis-node.profile")
     for s in cis_control_sections:
@@ -460,11 +492,19 @@ def main():
         print("\t" + str(no_oval))
     print()
 
+    if stats.check_tests:
+        print("* Rules with missing e2e tests")
+        for no_e2e in stats.missing_e2e_test:
+            print("\t" + str(no_e2e))
+        print()
+
     print("* Statistics")
     print_statline("controls implemented in either profile", stats.implemented_rules, stats.by_id)
     print_statline("controls missing in both profiles", stats.not_implemented_rules, stats.by_id)
     print_statline("controls missing OCIL", stats.missing_ocil, stats.implemented_rules)
     print_statline("controls missing OVAL", stats.missing_oval, stats.implemented_rules)
+    if stats.check_tests:
+        print_statline("rules missing e2e tests", stats.missing_e2e_test, stats.rules_with_oval)
 
 if __name__ == "__main__":
     main()
