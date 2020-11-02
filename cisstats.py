@@ -1,12 +1,20 @@
 #!/usr/bin/env python
 
-import docx
 import re
 import os.path
 import sys
 import argparse
 import subprocess
+import pickle
+from enum import Enum
 
+# FIXME: handle import errors
+from googleapiclient.discovery import build
+from google_auth_oauthlib.flow import InstalledAppFlow
+from google.auth.transport.requests import Request
+
+# FIXME: handle import errors
+import docx
 from xml.etree import ElementTree
 
 XCCDF12_NS = "http://checklists.nist.gov/xccdf/1.2"
@@ -25,6 +33,8 @@ OPENXML_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 AUDIT_BG_COLOR = "ddd9c4"
 
 AUDIT_NEEDS_VERIFICATION_BLOB = "# needs verification"
+
+DOCUMENT_ID = '1zf7viEiewDvbWoTLYbSub66sr_niIqsyRwPyy623Akk'
 
 def removeprefix(fullstr, prefix):
     if fullstr.startswith(prefix):
@@ -155,7 +165,120 @@ class CisCtrl:
         return "%s: %s" % (self.section, self.title)
 
 
-class CisDoc:
+class CisBenchKind(Enum):
+    DOCX = 1
+    GDOC = 2
+
+
+class NoCredsError(Exception):
+    def __str__(self):
+        return "Please make sure to install a gdoc app and fetch credentials.json"
+
+
+class GdocCisDoc:
+    CACHE_FILENAME = 'doc.pickle'
+    TOKEN_PICKLE = 'token.pickle'
+    # If modifying these scopes, delete the file token.pickle.
+    SCOPES = ['https://www.googleapis.com/auth/documents.readonly']
+
+    def __init__(self, doc_id, cache=False):
+        document = None
+        if os.path.exists(GdocCisDoc.CACHE_FILENAME) and cache == True:
+            with open(GdocCisDoc.CACHE_FILENAME, 'rb') as doc:
+                document = pickle.load(doc)
+
+        if not document:
+            document = self._get_document(doc_id)
+            with open(GdocCisDoc.CACHE_FILENAME, 'wb') as doc:
+                pickle.dump(document, doc)
+        else:
+            print("INFO: Using cached document")
+
+        self._doc = document
+
+    def _get_document(self, doc_id):
+        creds = None
+        # The file token.pickle stores the user's access and refresh tokens, and is
+        # created automatically when the authorization flow completes for the first
+        # time.
+        if os.path.exists(GdocCisDoc.TOKEN_PICKLE):
+            with open(GdocCisDoc.TOKEN_PICKLE, 'rb') as token:
+                creds = pickle.load(token)
+
+        # If there are no (valid) credentials available, let the user log in.
+        if not creds or not creds.valid:
+            if creds and creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+            else:
+                try:
+                    flow = InstalledAppFlow.from_client_secrets_file(
+                            'credentials.json', GdocCisDoc.SCOPES)
+                except FileNotFoundError:
+                    raise NoCredsError()
+
+                creds = flow.run_local_server(port=0)
+            # Save the credentials for the next run
+            with open(GdocCisDoc.TOKEN_PICKLE, 'wb') as token:
+                pickle.dump(creds, token)
+
+        service = build('docs', 'v1', credentials=creds)
+        # Retrieve the documents contents from the Docs service.
+        return service.documents().get(documentId=doc_id).execute()
+
+    def read_controls(self):
+        ctrl = None
+        sections = []
+        content = self._doc.get('body').get('content')
+        for citem in content:
+            para = citem.get('paragraph')
+            if para == None:
+                continue
+            if self._is_ctrl_header(para):
+                text = self._get_para_text(para)
+                ctrl = CisCtrl(text)
+                sections.append(ctrl)
+            if self._is_audit(para):
+                if ctrl == None:
+                    raise ValueError("Audit outside section?")
+                ctrl.has_audit = True
+
+                text = self._get_para_text(para)
+                if AUDIT_NEEDS_VERIFICATION_BLOB in text:
+                    ctrl.audit_verified = False
+
+        return sections
+
+    def _get_para_text(self, para):
+        return ''.join([ el.get('textRun').get('content') for el in para.get('elements')])
+
+    def _is_ctrl_header(self, para):
+        style = para.get('paragraphStyle')
+        if style == None or style.get('namedStyleType') != 'HEADING_3':
+            return False
+
+        text = self._get_para_text(para)
+        m = section_re.match(text)
+        if m is None:
+            return False
+
+        return True
+
+    def _is_audit(self, para):
+        style = para.get('paragraphStyle')
+        if style == None or style.get('namedStyleType') != 'NORMAL_TEXT':
+            return False
+
+        try:
+            shadingRgb = style['shading']['backgroundColor']['color']['rgbColor']
+        except KeyError:
+            return False
+        if shadingRgb['red'] != 0.8666667 or shadingRgb['green'] != 0.8509804 or shadingRgb['blue'] != 0.76862746:
+            return False
+
+        return True
+
+
+class DocxCisDoc:
     def __init__(self, filename):
         self._doc = docx.Document(filename)
 
@@ -203,6 +326,19 @@ class CisDoc:
         return True
 
 
+class CisDoc:
+    def __init__(self, doc_type, source, cache=False):
+        if doc_type == CisBenchKind.DOCX:
+            self._doc = DocxCisDoc(source)
+        elif doc_type == CisBenchKind.GDOC:
+            self._doc = GdocCisDoc(source, cache)
+        else:
+            raise ValueError("Unknown document type ", doc_type)
+
+    def read_controls(self):
+        return self._doc.read_controls()
+
+
 def process_rules(rule_stats, rules,  profile):
     for rule in rules:
         if rule is None:
@@ -223,13 +359,24 @@ def process_rules(rule_stats, rules,  profile):
 def print_statline(title, sub_i, total_i):
     sub = len(sub_i)
     total = len(total_i)
-    percent = 100.0 * (sub/total)
+    if total == 0:
+        percent = 0
+    else:
+        percent = 100.0 * (sub/total)
     print("\t%d/%d (%.2f%%) of %s" % (sub, total, percent, title))
+
 
 def main():
     parser = argparse.ArgumentParser(prog="cisstats.py")
 
     parser.add_argument("--cis-path", help="The path to the CIS benchmark")
+    parser.add_argument("--gdoc",
+                        action='store_true',
+                        help="Fetch the CIS benchmark from a google doc")
+    parser.add_argument("--cached-gdoc",
+                        default=False,
+                        action='store_true',
+                        help="Use a cached version of the gdoc if available")
 
     parser.add_argument("--ds-path", help="The path to the DataStream file")
     parser.add_argument("--repo-path", help="The path to the CaC repo to read DS from")
@@ -242,17 +389,21 @@ def main():
                         action='store_false',
                         help='Do not rebuild the content in --repo-path (default: rebuild)')
     parser.set_defaults(rebuild=True)
-    # TODO: profile list
     parser.add_argument("--profiles",
                         default="xccdf_org.ssgproject.content_profile_cis,xccdf_org.ssgproject.content_profile_cis-node",
                         help="The XCCDF IDs of the profiles to analyze")
 
     args = parser.parse_args()
 
-    if args.cis_path:
-        doc = CisDoc(args.cis_path)
-        cis_control_sections = doc.read_controls()
+    if args.gdoc == True:
+        doc = CisDoc(CisBenchKind.GDOC, DOCUMENT_ID, args.cached_gdoc)
+    elif args.cis_path:
+        doc = CisDoc(CisBenchKind.DOCX, args.cis_path)
+    else:
+        print("Please provide path to a docx export with --cis-patch or load from a google document using --gdoc")
+        sys.exit(1)
 
+    cis_control_sections = doc.read_controls()
     stats = BenchmarkStats(cis_control_sections)
     if args.ds_path:
         ds_path = args.ds_path
@@ -261,7 +412,7 @@ def main():
 
         if args.rebuild == True:
             buildscript_path = os.path.join(args.repo_path, "build_product")
-            buildp = subprocess.run([buildscript_path, "--datastream-only", "ocp4"], cwd=args.repo_path)
+            buildp = subprocess.run(capture_output=True, args=[buildscript_path, "--datastream-only", "ocp4"], cwd=args.repo_path)
             if buildp.returncode != 0:
                 print("Could not rebuild the content")
                 sys.exit(1)
