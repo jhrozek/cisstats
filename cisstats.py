@@ -412,9 +412,6 @@ def main():
 
     parser.add_argument("--ds-path", help="The path to the DataStream file")
     parser.add_argument("--repo-path", default=None, help="The path to the CaC repo to read DS from")
-    parser.add_argument("--ds-upstream",
-                        action='store_true',
-                        help="Fetch the latest built upstream DS")
 
     parser.add_argument('--no-rebuild',
                         dest='rebuild',
@@ -448,10 +445,8 @@ def main():
             if buildp.returncode != 0:
                 print("Could not rebuild the content")
                 sys.exit(1)
-    elif args.ds_upstream:
-        raise NotImplementedError("This still needs to be done")
     else:
-        print("Please specify either --repo-path or --ds-path or --ds-upstream")
+        print("Please specify either --repo-path or --ds-path")
         sys.exit(1)
 
     bench = XCCDFBenchmark(ds_path)
