@@ -48,6 +48,7 @@ class RuleProperties:
         self.repo_path = repo_path
         self.rule_id = None
         self.name = None
+        self.fix = False
         self.ignition_fix = False
         self.kubernetes_fix = False
         self.ocil_check = False
@@ -76,10 +77,11 @@ class RuleProperties:
                            (XCCDF12_NS))
 
         self.cis_id = cis_id.text
-        self.ignition_fix = False if ignition_fix is None else True
-        self.kubernetes_fix = False if kubernetes_fix is None else True
         self.ocil_check = False if ocil_check is None else True
         self.oval = False if oval is None else True
+        self.ignition_fix = False if ignition_fix is None else True
+        self.kubernetes_fix = False if kubernetes_fix is None else True
+        self.fix = self.ignition_fix or self.kubernetes_fix
         return self
 
     def _get_rule_path(self):
@@ -108,6 +110,8 @@ class BenchmarkStats:
         self.missing_e2e_test = list()
         self.rules = list()
         self.rules_with_oval = list()
+        self.rules_with_remediation = list()
+        self.rules_missing_remediation = list()
 
         self.by_id = dict()
         for s in cis_bench_stats:
@@ -129,7 +133,13 @@ class BenchmarkStats:
         if rule.oval == False:
             self.missing_oval.append(rule)
         else:
+            if rule.fix:
+                self.rules_with_remediation.append(rule)
+            else:
+                self.rules_missing_remediation.append(rule)
             self.rules_with_oval.append(rule)
+
+
         if self.check_tests and rule.oval and not rule.e2etest:
             self.missing_e2e_test.append(rule)
 
@@ -487,6 +497,16 @@ def main():
         print("\t" + str(no_oval))
     print()
 
+    print("* Rules with remediation")
+    for rem_rule in stats.rules_with_remediation:
+        print("\t" + str(rem_rule))
+    print()
+
+    print("* Rules missing remediation")
+    for no_rem_rule in stats.rules_missing_remediation:
+        print("\t" + str(no_rem_rule))
+    print()
+
     if stats.check_tests:
         print("* Rules with missing e2e tests")
         for no_e2e in stats.missing_e2e_test:
@@ -498,6 +518,8 @@ def main():
     print_statline("controls missing in both profiles", stats.not_implemented_rules, stats.by_id)
     print_statline("controls missing OCIL", stats.missing_ocil, stats.implemented_rules)
     print_statline("controls missing OVAL", stats.missing_oval, stats.implemented_rules)
+    print_statline("controls with remediation", stats.rules_with_remediation, stats.rules_with_oval)
+    print_statline("controls missing remediation", stats.rules_missing_remediation, stats.rules_with_oval)
     if stats.check_tests:
         print_statline("rules missing e2e tests", stats.missing_e2e_test, stats.rules_with_oval)
 
