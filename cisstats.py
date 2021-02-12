@@ -473,20 +473,6 @@ def main():
             print("\t%s: %s" % (s.section, s.title))
     print()
 
-    print("* Rules missing an audit blob")
-    for s in cis_control_sections:
-        if s.has_audit == True:
-            continue
-        print("\t%s: %s" % (s.section, s.title))
-    print()
-
-    print("* Rules whose audit blob is not verified")
-    for s in cis_control_sections:
-        if s.has_audit == False or s.audit_verified == True:
-            continue
-        print("\t%s: %s" % (s.section, s.title))
-    print()
-
     print("* Rules with missing OCIL")
     for no_ocil in stats.missing_ocil:
         print("\t" + str(no_ocil))
